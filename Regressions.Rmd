@@ -1,0 +1,395 @@
+---
+title: "Data structure and regression models"
+author: "Jack Chen, Jingxuan Liu"
+date: "2/14/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+## Library
+```{r warning=F, message =F}
+library(tidyverse)
+library(ggplot2)
+library(MASS)
+library(mlogit)
+library(nnet)
+library(AER)
+library(knitr)
+library(broom)
+library(pscl)
+library(betareg)
+```
+
+## Read Data
+
+```{r}
+phd <- read.csv("phd.csv")
+```
+
+## 1 Linear Regression
+```{r}
+# Create training and testing sets 
+train <- sample(nrow(phd), size = nrow(phd)*0.75, replace = F)
+
+phd_train <- phd[train,]
+phd_test <- phd[-train,]
+
+# Run linear regression
+gpa_stipend <- lm(stipend ~ gpa, data = phd_train)
+
+summary(gpa_stipend)
+
+kable(tidy(gpa_stipend), digits = 2) # formatted table for knitting
+```
+
+```{r}
+# Visualize scatter plot
+plot(phd$gpa, phd$stipend, main = "Scatter Plot with Linear Regression Line")
+abline(gpa_stipend, col = "red")
+```
+
+```{r}
+# Generate predicted values on test set 
+phd_test_aug <- augment(gpa_stipend, newdata = phd_test)
+
+ggplot(phd_test_aug,
+       aes(x = stipend, y = .fitted)) + 
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "actual stipend",
+       y = "predicted stipend",
+       title = "Predicted vs. actual stipend")
+
+ggplot(phd_test_aug,
+       aes(x = gpa, y = .resid)) + 
+  geom_point() +
+  geom_hline(aes(yintercept = 0), color = "red") + 
+  labs(x = "GPA",
+       y = "Residuals",
+       title = "Residuals vs. GPA")
+```
+
+### Instrumental Variable 
+
+```{r}
+set.seed(1234)
+
+# generate 100 random student IDs
+student_ids <- sample(100000:999999, 100, replace = FALSE)
+
+#generate confounding variables
+ivy <- rbinom(500, size = 1, prob = 0.2)
+
+# randomly assign 50 students to thesis group and 50 to non-thesis group  
+thesis_group <- sample(student_ids, 50, replace = FALSE)
+non_thesis_group <- student_ids[!(student_ids %in% thesis_group)]
+
+# generate GPAs for each student
+gpa <- runif(100, min = 2.0, max = 4.0) + ivy*0.2
+
+# increase the GPAs of students in the thesis group probabilitsically
+gpa[student_ids %in% thesis_group] <- gpa[student_ids %in% thesis_group] + max(0,rnorm(1,mean = 0.5, sd = 0.3))
+gpa <- ifelse(gpa > 4, 4, gpa)
+
+# simulate the relationship between GPA and graduate stipend, with some random noise
+stipend <- 10000 + 5000 * gpa + rnorm(100, mean = 0, sd = 1000) + ivy*10000
+stipend[student_ids %in% thesis_group] <- stipend[student_ids %in% thesis_group]
+
+# create a binary variable indicating whether a student is in the thesis group
+thesis_indicator <- rep(0, 100)
+thesis_indicator[student_ids %in% thesis_group] <- 1
+
+# create the dataset
+data <- data.frame(student_id = student_ids,
+                   thesis = thesis_indicator,
+                   gpa = gpa,
+                   stipend = stipend,
+                   ivy = ivy)
+
+
+# Create histogram of GPA by thesis group
+ggplot(data, aes(x = gpa, fill = factor(thesis))) +
+  geom_histogram(alpha = 0.5, position = "identity", bins = 15) +
+  labs(x = "GPA", y = "Frequency") +
+  scale_fill_discrete(name = "Thesis", labels = c("No", "Yes")) +
+  ggtitle("Histogram of GPA by Thesis Group")
+
+# First-stage regression: Estimate the effect of thesis completion on GPA
+iv_model <- lm(gpa ~ thesis, data = data)
+summary(iv_model)
+
+# Second-stage regression: Estimate the effect of GPA on stipend, using thesis as an instrument
+stipend_model <- ivreg(stipend ~ gpa | thesis, data = data)
+print(summary(stipend_model))
+
+## Compare ivreg to confounded linear regression
+print(summary(lm(stipend ~ gpa)))
+```
+
+## 2 Ordinal IVs and continuous DVs 
+
+```{r}
+ggplot(phd, aes(x = research, y = stipend)) +
+  geom_violin() +
+  stat_summary(fun.data = "mean_cl_boot", geom = "point") +
+  stat_summary(fun.data = "mean_cl_boot", geom = "errorbar", width = 0.5) +
+  labs(title = "Stipend by Research Experience with Confidence Interval",
+       x = "Research",
+       y = "Stipend") +
+  theme_minimal()
+
+
+phd$research_numeric <- as.numeric(phd$research) #what if we make it numeric?
+#we cannot identify non-linearity vs unevenly spaced intervals
+
+print(summary(lm(stipend ~ research, data = phd)))
+print(summary(lm(stipend ~ research_numeric, data = phd)))
+```
+
+## 2 Categorical Data
+
+### 2.1 Logistic Regression
+```{r logistic}
+# Fit logistic regression model
+logit_admitted <- glm(admitted ~ gpa, data = phd_train, family = binomial)
+summary(logit_admitted)
+
+ggplot(phd, aes(x=gpa, y=admitted)) +
+  geom_point() +
+  stat_smooth(method="glm", color="red", se=FALSE,
+                method.args = list(family=binomial))
+
+# Predict probability of admission for new GPA values
+phd_test$prob <- predict(logit_admitted, phd_test, type = "response")
+
+# Display the predicted probabilities
+ggplot(phd_test, aes(x=gpa, y=prob)) +
+  geom_point()
+```
+
+### 2.2 Ordered Logistic Regression
+
+```{r}
+phd$prospect <- as.factor(phd$prospect) #remember to factorize the variables
+
+prospect_model <- polr(prospect ~ gpa + research, data = phd) 
+
+summary(prospect_model)
+```
+
+### 2.3 Multinomial Logistic Regression
+
+```{r}
+multinomial_data <- read.csv("multinomial_dat.csv")
+```
+
+
+```{r}
+fit <- multinom(brand ~ gpa + stipend, data = multinomial_data)
+summary(fit)
+```
+
+## 3 Count Data 
+
+```{r}
+hist(phd$offers)
+```
+
+### 3.1 Poisson 
+
+```{r}
+mean(phd$offers)
+var(phd$offers)
+```
+
+```{r}
+# fitting a poisson model
+m_pois <- glm(offers ~ gpa + research, family = poisson(link = "log"), data = phd)
+summary(m_pois)
+
+# Interpretation 
+tidy(m_pois, exponentiate = F)
+tidy(m_pois, exponentiate = T)
+```
+
+```{r}
+# test for dispersion 
+dispersiontest(m_pois)
+```
+
+### 3.2 Negative Binomial 
+
+```{r}
+# From library(MASS)
+m_negbin <- glm.nb(offers ~ gpa + research, data = phd)
+summary(m_negbin)
+```
+
+```{r}
+# likelihood ratio test 
+pchisq(2 * (logLik(m_negbin) - logLik(m_pois)), df = 1, lower.tail = FALSE)
+```
+
+```{r}
+# compare model fits 
+p_res_pois <- resid(m_pois)
+plot(fitted(m_pois), p_res_pois, col='steelblue', pch=16,
+     xlab='Predicted Offers', ylab='Standardized Residuals', main='Poisson')
+abline(0,0)
+
+p_res_negbin <- resid(m_negbin)
+plot(fitted(m_negbin), p_res_negbin, col='steelblue', pch=16,
+     xlab='Predicted Offers', ylab='Standardized Residuals', main='Negative Binomial')
+abline(0,0)
+```
+
+### Poisson vs negbin overdispersion 
+```{r}
+set.seed(9)
+phd$new_offer <- rnbinom(n = 500, size = 2, prob = (1/phd$gpa*0.5))
+```
+
+```{r}
+hist(phd$new_offer)
+mean(phd$new_offer)
+var(phd$new_offer)
+```
+
+```{r}
+m_pois2 <- glm(new_offer ~ gpa + research, family = poisson(link = "log"), data = phd)
+summary(m_pois2)
+```
+
+```{r}
+# test for dispersion 
+dispersiontest(m_pois2)
+```
+
+```{r}
+m_negbin2 <- glm.nb(new_offer ~ gpa + research, data = phd)
+summary(m_negbin2)
+```
+
+```{r}
+# likelihood ratio test 
+pchisq(2 * (logLik(m_negbin2) - logLik(m_pois2)), df = 1, lower.tail = FALSE)
+```
+
+```{r}
+# compare model fits 
+p_res_pois <- resid(m_pois2)
+plot(fitted(m_pois2), p_res_pois, col='steelblue', pch=16,
+     xlab='Predicted Offers', ylab='Standardized Residuals', main='Poisson')
+abline(0,0)
+
+p_res_negbin <- resid(m_negbin2)
+plot(fitted(m_negbin2), p_res_negbin, col='steelblue', pch=16,
+     xlab='Predicted Offers', ylab='Standardized Residuals', main='Negative Binomial')
+abline(0,0)
+```
+
+```{r}
+# comparing with linear regression 
+lm <- lm(new_offer ~ gpa + research, data = phd)
+lm_aug <- augment(lm, phd)
+
+summary(lm)
+```
+
+```{r}
+ggplot(lm_aug) + 
+  geom_point(aes(x = .fitted, y = .std.resid)) +
+  geom_hline(aes(yintercept = 0), color = "red")
+
+plot(fitted(m_pois2), p_res_pois, col='steelblue', pch=16,
+     xlab='Predicted Offers', ylab='Standardized Residuals', main='Poisson')
+abline(0,0)
+
+p_res_negbin <- resid(m_negbin2)
+plot(fitted(m_negbin2), p_res_negbin, col='steelblue', pch=16,
+     xlab='Predicted Offers', ylab='Standardized Residuals', main='Negative Binomial')
+abline(0,0)
+```
+
+### 3.3 Zero-inflated models 
+
+```{r}
+phd <- phd %>%
+  mutate(new_offer_zi = case_when(
+    new_offer > 5 ~ new_offer - 5,
+    TRUE ~ 0
+  )) 
+
+# Assume we have people who didn't apply and got zero offers, as well as people who applied
+```
+
+```{r}
+ggplot(phd) +
+  geom_histogram(aes(new_offer_zi), binwidth = 1)
+```
+
+```{r}
+# regular binomial
+m_negbin3 <- glm.nb(new_offer_zi ~ gpa + research, data = phd)
+summary(m_negbin3)
+```
+
+```{r}
+hist(fitted(m_negbin3))
+```
+
+zero-inflated negative binomial theoretically assumes that the excessive zeros are generated through a separate process
+
+```{r}
+# zero-inflated binomial model
+m_zeroinf <- zeroinfl(new_offer_zi~ gpa + research, data = phd,
+                      dist = "negbin")
+summary(m_zeroinf)
+```
+
+```{r}
+hist(fitted(m_zeroinf))
+```
+
+```{r}
+vuong(m_zeroinf, m_negbin3, digits = getOption("digits"))
+```
+
+For more information on zero-inflated models, please see https://stats.oarc.ucla.edu/r/dae/zinb/
+
+## Frequency data 
+
+```{r}
+set.seed(1)
+phd$applied <- rpois(n = 500, 25)
+phd$prop_accepted <- phd$offers/phd$applied
+
+hist(phd$prop_accepted)
+```
+
+```{r}
+phd$prop_accepted[phd$prop_accepted == 0] <- 0.0000001
+```
+
+```{r}
+m_beta <- betareg(prop_accepted ~ gpa + research, data = phd)
+summary(m_beta)
+```
+
+```{r}
+p_beta <- resid(m_beta, type = "pearson")
+plot(fitted(m_beta), p_beta, col='steelblue', pch=16,
+     xlab='Predicted Offers', ylab='Residuals', main='Beta regression')
+abline(0,0)
+```
+
+for more information on beta regression, please refer to https://www.andrewheiss.com/blog/2021/11/08/beta-regression-guide/#a-beta-regression
