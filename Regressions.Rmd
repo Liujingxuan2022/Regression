@@ -58,6 +58,12 @@ abline(gpa_stipend, col = "red")
 ```
 
 ```{r}
+# comparing with the null model 
+m_null <- lm(stipend ~ 1, data = phd_train)
+kable(anova(m_null, gpa_stipend))
+```
+
+```{r}
 # Generate predicted values on test set 
 phd_test_aug <- augment(gpa_stipend, newdata = phd_test)
 
@@ -390,6 +396,10 @@ p_beta <- resid(m_beta, type = "pearson")
 plot(fitted(m_beta), p_beta, col='steelblue', pch=16,
      xlab='Predicted Offers', ylab='Residuals', main='Beta regression')
 abline(0,0)
+```
+
+```{r}
+# If zeros and ones come from qualitatively different processes, can consider using a zero-one inflated beta regression 
 ```
 
 for more information on beta regression, please refer to https://www.andrewheiss.com/blog/2021/11/08/beta-regression-guide/#a-beta-regression
